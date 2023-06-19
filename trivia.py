@@ -12,8 +12,12 @@ from fastapi_poe.client import MetaMessage, stream_request
 from fastapi_poe.types import QueryRequest, ProtocolMessage
 from sse_starlette.sse import ServerSentEvent
 import requests
-from utils import is_new_conversation, add_conversation, increment_message_counter, get_message_counter
-from prompts import TRIVIA_PROMPT, INTRO_MESSAGE
+from utils import (
+    is_new_conversation, add_conversation, get_state, update_state, State, add_article, add_trivia,
+    get_trivia, get_current_title, get_state_idx, increment_state_idx, query_llm)
+from prompts import TRIVIA_PROMPT, INTRO_MESSAGE, REQUEST_TOPIC, GRADING_PROMPT
+
+QUESTION_COUNT = 5
 
 def get_article(title: str) -> str:
     """Get the plaintext content of the Wikipedia article with this title."""
@@ -39,19 +43,60 @@ class TriviaBot(PoeBot):
     async def get_response(self, query: QueryRequest) -> AsyncIterable[ServerSentEvent]:
         if is_new_conversation(query.conversation_id):
             add_conversation(query.conversation_id, query.user_id)
-            increment_message_counter(query.conversation_id)
             yield self.text_event(INTRO_MESSAGE)
         else:
-            increment_message_counter(query.conversation_id)
-
-            if get_message_counter(query.conversation_id) == 2:
+            if get_state(query.conversation_id) == State.requesting_topic:
                 # user is setting up game
-                response = await self.create_trivia(query)
-                yield self.text_event(response)
-            else:
-                # user is playing game
-                yield self.text_event(str(get_message_counter(query.conversation_id)))
+                title = await self.get_wiki_link(query)
+                update_state(query.conversation_id, State.asking_questions, title)
+                yield self.text_event(f"Sure! I'll ask you questions about {title}. Give me a moment while I check Wikipedia...")
+                await self.create_trivia(query, title)
                 
+                # ask their first question
+                yield self.text_event(f"\n\nOkay! I have {QUESTION_COUNT} questions for you. Let's begin.\n\n")
+                question, _ = self.get_nth_trivia(query.conversation_id, 0)
+                increment_state_idx(query.conversation_id)
+                yield self.text_event(question)
+            else:
+                # grade their response to the last question
+                idx = get_state_idx(query.conversation_id)
+
+                grade = await self.grade_answer(query, idx)
+                yield self.text_event(grade)
+
+                if idx >= QUESTION_COUNT:
+                    update_state(query.conversation_id, State.requesting_topic)
+                    yield self.text_event(REQUEST_TOPIC)
+
+                else:
+                    # ask a new question
+                    question, _ = self.get_nth_trivia(query.conversation_id, idx)
+
+                    increment_state_idx(query.conversation_id)
+                    yield self.text_event(response)
+
+
+    async def grade_answer(self, query, idx):
+        return "grade answer\n\n"
+        user_answer = query.query[-1].content
+        question, answer = get_single_trivia(query.conversation_id, idx)
+
+        prompt = GRADING_PROMPT.format(
+            question = question,
+            answer = answer,
+            user_answer = user_answer,
+        )
+
+        last_message = query.query[-1]
+        last_message.content = prompt
+
+        query.query = [last_message]
+
+        response = ""
+        async for msg in stream_request(query, "sage", query.api_key):
+            response += msg.text
+
+        return response + "\n\n"
 
 
     async def get_wiki_link(self, query: QueryRequest) -> AsyncIterable[ServerSentEvent]:
@@ -75,8 +120,8 @@ class TriviaBot(PoeBot):
         return wiki_title
 
 
-    async def create_trivia(self, query: QueryRequest) -> AsyncIterable[ServerSentEvent]:
-        title = await self.get_wiki_link(query)
+    async def create_trivia(self, query: QueryRequest, title: str) -> AsyncIterable[ServerSentEvent]:
+        add_article(title+"_"+query.conversation_id)
         article_text = get_article(title)
         
         prompt = TRIVIA_PROMPT.format(
@@ -93,13 +138,15 @@ class TriviaBot(PoeBot):
             trivia_questions += msg.text
         trivia_questions = json.loads(trivia_questions)
         
-        response_str = ""
-        for i, question in enumerate(trivia_questions):
-            response_str += f"Question {str(i+1)}. {question['question']}\n"
-            response_str += f"Answer {str(i+1)}. {question['answer']}\n\n"
+        article_key = title + "_" + query.conversation_id
+        for trivia in trivia_questions:
+            add_trivia(article_key, trivia['question'], trivia['answer'])
         
-        return response_str.strip()
-        
+
+    def get_nth_trivia(self, conversation_id, n):
+        title = get_current_title(conversation_id)
+        all_trivia = get_trivia(title+"_"+conversation_id)
+        return all_trivia[n].question, all_trivia[n].answer
 
 
 if __name__ == "__main__":

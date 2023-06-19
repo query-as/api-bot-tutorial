@@ -18,3 +18,16 @@ Welcome to TriviaBot!
 
 To start out, please describe the topic you are interested in trivia about. Then I will ask you trivia questions about it!
 """
+
+REQUEST_TOPIC = """\n\nThat's all the questions I had.\n\nWhat else would you like to hear trivia questions about?"""
+
+
+GRADING_PROMPT = """Consider the following trivia question:
+
+Question: <question>{question}</question>
+Expected answer: <answer>{answer}</answer>
+
+A person gave this answer to that question:
+Answer: <answer>{user_answer}</answer>
+
+Is that answer correct? Tell them (in the second person) why or why not."""

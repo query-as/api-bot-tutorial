@@ -1,0 +1,38 @@
+import sqlite3
+
+conn = sqlite3.connect('database.db')
+c = conn.cursor()
+
+
+# Create user table
+c.execute('''CREATE TABLE user 
+            (user_id text PRIMARY KEY)''')
+
+
+c.execute('''CREATE TABLE conversations
+            (conversation_id text PRIMARY KEY, 
+             user_id text,  
+             state int,  
+             state_idx int, 
+             article text,
+             FOREIGN KEY(user_id) REFERENCES user(user_id),
+             FOREIGN KEY(article) REFERENCES article(title))''')
+c.execute('''CREATE INDEX user_id_index ON conversations(user_id)''')
+
+
+c.execute('DROP TABLE conversations')
+
+
+# Create article table
+c.execute('''CREATE TABLE article 
+(title text PRIMARY KEY)''')
+
+# Create trivia table 
+c.execute('''CREATE TABLE trivia
+            (id integer PRIMARY KEY, 
+             article text,  
+             question text, 
+             answer text,
+             FOREIGN KEY(article) REFERENCES article(title))''')
+
+
