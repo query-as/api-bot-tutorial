@@ -1,7 +1,7 @@
 import tiktoken
+import time
 from fastapi_poe.types import QueryRequest, ProtocolMessage
-
-
+from fastapi_poe.client import MetaMessage, stream_request
 
 enc = tiktoken.encoding_for_model("gpt-4")
 
@@ -9,29 +9,41 @@ def count_tokens(text: str) -> int:
     return len(enc.encode(text))
 
 
-def truncate_tokens(text: str) -> str:
+def truncate_tokens(text: str, limit: int) -> str:
     return enc.decode(enc.encode(text)[:limit])
 
 
 async def query_llm(query, prompt):
     message = ProtocolMessage(
-        "user",
-        prompt
+        role="user",
+        content=prompt,
+        version = query.version, 
+        type=query.type,
     )
 
     query = QueryRequest(
-        [message],
-        query.user_id,
-        query.conversation_id,
-        query.message_id,
-        query.api_key,
+        query = [message],
+        user_id = query.user_id,
+        conversation_id = query.conversation_id,
+        message_id = query.message_id,
+        api_key = query.api_key,
+        version = query.version, 
+        type=query.type
     )
 
-    response = ""
-    async for msg in stream_request(query, "sage", query.api_key):
-        response += msg.text
+    try:
+        response = ""
+        async for msg in stream_request(query, "sage", query.api_key):
+            response += msg.text
+    # one retry
+    except Exception as e:
+        time.sleep(1)
+        response = ""
+        async for msg in stream_request(query, "sage", query.api_key):
+            response += msg.text
     
-    yield response
+    return response
+
 
 
 import sqlite3
@@ -93,8 +105,11 @@ def get_state_idx(conversation_id):
 
 
 def add_article(title):
-    c.execute('INSERT INTO article (title) VALUES (?)', (title,))
-    conn.commit()
+    try:
+        c.execute('INSERT INTO article (title) VALUES (?)', (title,))
+        conn.commit()
+    except Exception as e:
+        print(e)
 
 
 def add_trivia(article, question, answer):

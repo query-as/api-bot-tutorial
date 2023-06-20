@@ -14,7 +14,7 @@ from sse_starlette.sse import ServerSentEvent
 import requests
 from utils import (
     is_new_conversation, add_conversation, get_state, update_state, State, add_article, add_trivia,
-    get_trivia, get_current_title, get_state_idx, increment_state_idx, query_llm)
+    get_trivia, get_current_title, get_state_idx, increment_state_idx, query_llm, truncate_tokens)
 from prompts import TRIVIA_PROMPT, INTRO_MESSAGE, REQUEST_TOPIC, GRADING_PROMPT
 
 QUESTION_COUNT = 5
@@ -47,39 +47,48 @@ class TriviaBot(PoeBot):
         else:
             if get_state(query.conversation_id) == State.requesting_topic:
                 # user is setting up game
-                title = await self.get_wiki_link(query)
-                update_state(query.conversation_id, State.asking_questions, title)
-                yield self.text_event(f"Sure! I'll ask you questions about {title}. Give me a moment while I check Wikipedia...")
-                await self.create_trivia(query, title)
+                try:
+                    link, title = await self.get_wiki_link(query)
+                    ftitle = title.replace("_", " ").title()
+                    yield self.text_event(f"Sure! I'll ask you questions about [{ftitle}]({link}). Give me a moment while I check Wikipedia...")
+                    await self.create_trivia(query, title)
+                    update_state(query.conversation_id, State.asking_questions, title)
+                except Exception as e:
+                    print(e)
+                    yield self.text_event("\n\nI'm sorry, I ran into a problem on the backend. Can you please try again?")
+                    return
                 
                 # ask their first question
                 yield self.text_event(f"\n\nOkay! I have {QUESTION_COUNT} questions for you. Let's begin.\n\n")
                 question, _ = self.get_nth_trivia(query.conversation_id, 0)
-                increment_state_idx(query.conversation_id)
                 yield self.text_event(question)
             else:
                 # grade their response to the last question
                 idx = get_state_idx(query.conversation_id)
 
-                grade = await self.grade_answer(query, idx)
-                yield self.text_event(grade)
+                try:
+                    grade = await self.grade_answer(query, idx)
+                    yield self.text_event(grade)
+                except Exception as e:
+                    print(e)
 
-                if idx >= QUESTION_COUNT:
+                if idx >= QUESTION_COUNT-1:
                     update_state(query.conversation_id, State.requesting_topic)
                     yield self.text_event(REQUEST_TOPIC)
 
                 else:
                     # ask a new question
-                    question, _ = self.get_nth_trivia(query.conversation_id, idx)
-
                     increment_state_idx(query.conversation_id)
-                    yield self.text_event(response)
+                    question, _ = self.get_nth_trivia(query.conversation_id, idx+1)
+
+                    
+                    yield self.text_event(question)
 
 
     async def grade_answer(self, query, idx):
-        return "grade answer\n\n"
+        # return "grade answer\n\n"
         user_answer = query.query[-1].content
-        question, answer = get_single_trivia(query.conversation_id, idx)
+        question, answer = self.get_nth_trivia(query.conversation_id, idx)
 
         prompt = GRADING_PROMPT.format(
             question = question,
@@ -87,16 +96,14 @@ class TriviaBot(PoeBot):
             user_answer = user_answer,
         )
 
-        last_message = query.query[-1]
-        last_message.content = prompt
+        try:
+            response = await query_llm(query, prompt)
+            return response + "\n\n"
+        except Exception as E:
+            print(E)
 
-        query.query = [last_message]
-
-        response = ""
-        async for msg in stream_request(query, "sage", query.api_key):
-            response += msg.text
-
-        return response + "\n\n"
+            return f"I'm sorry, I ran into a problem while grading your answer. \n\nHere's what I had written down as the right answer:{answer}\n\nHere's another question:\n\n"
+        
 
 
     async def get_wiki_link(self, query: QueryRequest) -> AsyncIterable[ServerSentEvent]:
@@ -107,35 +114,23 @@ class TriviaBot(PoeBot):
 
         last_message = query.query[-1]
         content = last_message.content
-        last_message.content = f"Return the link of the Wikipedia page for the query. Don't include any additional text: {content}"
-
-        query.query = [last_message]
-
-        wiki_link = ""
-        async for msg in stream_request(query, "sage", query.api_key):
-            wiki_link += msg.text
+        prompt = f"Return the link of the Wikipedia page for the query. Don't include any additional text: {content}"
+        wiki_link = await query_llm(query, prompt)
         
         wiki_title = wiki_link.split("/")[-1]
         
-        return wiki_title
+        return wiki_link, wiki_title
 
 
     async def create_trivia(self, query: QueryRequest, title: str) -> AsyncIterable[ServerSentEvent]:
         add_article(title+"_"+query.conversation_id)
         article_text = get_article(title)
-        
+
         prompt = TRIVIA_PROMPT.format(
             title = title,
-            article_text = article_text[:4000]
+            article_text = truncate_tokens(article_text, 2500)
         )
-        last_message = query.query[-1]
-        last_message.content = prompt
-
-        query.query = [last_message]
-
-        trivia_questions = ""
-        async for msg in stream_request(query, "sage", query.api_key):
-            trivia_questions += msg.text
+        trivia_questions = await query_llm(query, prompt)
         trivia_questions = json.loads(trivia_questions)
         
         article_key = title + "_" + query.conversation_id

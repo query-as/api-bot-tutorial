@@ -30,4 +30,4 @@ Expected answer: <answer>{answer}</answer>
 A person gave this answer to that question:
 Answer: <answer>{user_answer}</answer>
 
-Is that answer correct? Tell them (in the second person) why or why not."""
+Is that answer correct? Tell them (in the second person) why or why not. Be generous in your grading, not pedantic. Use a kind tone and keep your response relatively short."""
